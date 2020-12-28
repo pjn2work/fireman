@@ -1,7 +1,7 @@
 import os
 import re
 import pandas as pd
-from typing import Tuple
+from typing import Tuple, List
 from datetime import datetime
 from pathlib import Path
 from shutil import copystat, copy2
@@ -10,9 +10,20 @@ from rich.traceback import install
 install()
 
 
-HEADER = ["fpn", "folder", "rpath", "rfolder", "filename", "name", "ext", "size", "mtime", "ctime", "dst_fpn", "action"]
-CSV_HEADERS = ["fpn", "dst_fpn", "action"]
-ACTIONS = ("MOVE", "RENAME", "COPY", "DELETE")
+HEADER_SOURCE_FPN = "fpn"
+HEADER_TARGET_FPN = "dst_fpn"
+HEADER_RELATIVE_FOLDER = "rfolder"
+HEADER_ACTION = "action"
+HEADER = [HEADER_SOURCE_FPN, "folder", "rpath", HEADER_RELATIVE_FOLDER, "filename", "name", "ext", "size", "mtime", "ctime", HEADER_TARGET_FPN, HEADER_ACTION]
+CSV_HEADERS = [HEADER_SOURCE_FPN, HEADER_TARGET_FPN, HEADER_ACTION]
+
+REGEX_RENAME_FIELD = "filename"
+
+ACTION_MOVE = "MOVE"
+ACTION_RENAME = "RENAME"
+ACTION_COPY = "COPY"
+ACTION_DELETE = "DELETE"
+ACTIONS = (ACTION_MOVE, ACTION_RENAME, ACTION_COPY, ACTION_DELETE)
 
 
 def list_files(path: str = "", 
@@ -20,7 +31,7 @@ def list_files(path: str = "",
                include_files: bool = True,
                include_folders: bool = True,
                include_sub_folders: bool = False,
-               filename_regex_filter: str = "") -> list[str]:
+               filename_regex_filter: str = "") -> List[str]:
     if not path:
         path = os.getcwd()
     
@@ -28,27 +39,31 @@ def list_files(path: str = "",
         result = [os.path.join(path, f) for f in os.listdir(path)] if include_full_path_name else os.listdir(path)
     else:
         result = list()
-        for f in os.listdir(path):
-            fpn = os.path.join(path, f)
+        try:
+            for f in os.listdir(path):
+                fpn = os.path.join(path, f)
 
-            if filename_regex_filter and os.path.isfile(fpn) and not re.search(filename_regex_filter, f):
-                continue
+                if filename_regex_filter and os.path.isfile(fpn) and not re.search(filename_regex_filter, f):
+                    continue
 
-            if (include_files and os.path.isfile(fpn)) or (include_folders and os.path.isdir(fpn)):
-                result.append(fpn if include_full_path_name else f)
+                if (include_files and os.path.isfile(fpn)) or (include_folders and os.path.isdir(fpn)):
+                    result.append(fpn if include_full_path_name else f)
 
-            if include_sub_folders and os.path.isdir(fpn):
-                result += list_files(fpn,
-                                include_full_path_name=include_full_path_name,
-                                include_files=include_files,
-                                include_folders=include_folders,
-                                include_sub_folders=include_sub_folders,
-                                filename_regex_filter=filename_regex_filter)
+                if include_sub_folders and os.path.isdir(fpn):
+                    result += list_files(fpn,
+                                    include_full_path_name=include_full_path_name,
+                                    include_files=include_files,
+                                    include_folders=include_folders,
+                                    include_sub_folders=include_sub_folders,
+                                    filename_regex_filter=filename_regex_filter)
+        except Exception:
+            pass
 
     return result
 
 
-def list_folders(path: str = "", foldername_regex_filter: str = "") -> list[str]:
+def list_folders(path: str = "",
+                 foldername_regex_filter: str = "") -> List[str]:
     folders = list_files(path=path, include_full_path_name=True, include_files=False, include_folders=True, include_sub_folders=True)
     if not foldername_regex_filter:
         return folders
@@ -56,30 +71,48 @@ def list_folders(path: str = "", foldername_regex_filter: str = "") -> list[str]
     return [folder for folder in folders if re.search(foldername_regex_filter, folder)]
 
 
-def list_file_details(list_of_fpn_files: list, relative_path: Tuple[str, int] = None) -> list[tuple]:
+def list_file_details(list_of_fpn_files: list,
+                      relative_path: Tuple[str, int] = None,
+                      callback_on_error: callable = None,
+                      callback_on_progress: callable = None) -> List[tuple]:
     if relative_path:
         if isinstance(relative_path, str):
             relative_path = len(relative_path)
     else:
         relative_path = 0
 
+    action = "LIST_FILE_DETAILS"
+    total = len(list_of_fpn_files)
+    current = 0
+
     res2 = list()
     for fpn in list_of_fpn_files:
-        folder, filename = os.path.split(fpn)
-        rpath = fpn[relative_path:].lstrip(os.sep)
-        rfolder = folder[relative_path:].lstrip(os.sep)
-        name, extension = os.path.splitext(filename)
-        stat = os.stat(fpn)
-        filesize = stat.st_size
-        md_time = datetime.fromtimestamp(stat.st_mtime)
-        cr_time = datetime.fromtimestamp(stat.st_ctime)
+        current += 1
 
-        attr = (fpn, folder, rpath, rfolder, filename, name, extension[1:], filesize, md_time, cr_time)
-        res2.append(attr)
+        try:
+            folder, filename = os.path.split(fpn)
+            rpath = fpn[relative_path:].lstrip(os.sep)
+            rfolder = folder[relative_path:].lstrip(os.sep)
+            name, extension = os.path.splitext(filename)
+            stat = os.stat(fpn)
+            filesize = stat.st_size
+            md_time = datetime.fromtimestamp(stat.st_mtime)
+            cr_time = datetime.fromtimestamp(stat.st_ctime)
+
+            attr = (fpn, folder, rpath, rfolder, filename, name, extension[1:], filesize, md_time, cr_time)
+            res2.append(attr)
+        except Exception as e:
+            filesize = -1
+            if callback_on_error:
+                callback_on_error(action, [fpn, e])
+
+        if callback_on_progress:
+            callback_on_progress(action, [total, current, fpn, filesize])
+
     return res2
 
 
-def get_empty_folders_list(path: str) -> list:
+def list_empty_folders(path: str) -> list:
     # get all files under path and save only the foldername (the occupied ones, by files)
     files = list_files(path, include_full_path_name=True, include_folders=False, include_sub_folders=True)
     files = list({os.path.dirname(file) for file in files})
@@ -96,42 +129,50 @@ def get_empty_folders_list(path: str) -> list:
         else:
             empty_folders.add(folder)
 
-    return list(empty_folders)
+    empty_folders = list(empty_folders)
+    empty_folders.sort(key=str.lower, reverse=True)
+
+    return empty_folders
 
 
-def execute_actions(list_of_fpn_files: list[tuple], action: str = "", callback_on_error: callable = None, is_dryrun: bool = True):
+def execute_actions(list_of_fpn_files: List[tuple],
+                    action: str = "",
+                    callback_on_error: callable = None,
+                    callback_on_progress: callable = None,
+                    is_dryrun: bool = True):
     """
     action = ("MOVE", "RENAME", "COPY", "DELETE")
     list_of_fpn_files = [(src, dst, action) or (src, dst) or "src", ...]
     callback_on_error = func(sender, data)
+    callback_on_progress = func(sender, data)
     """
     if not isinstance(list_of_fpn_files, list) or not isinstance(list_of_fpn_files[0], (list, tuple, str)):
         raise ValueError(f"'list_of_fpn_files' parameter must be of [(src, dst, action) or (src, dst) or 'src', ...]")
 
-    lastfolder = src = dst = ""
+    last_folder = src = dst = ""
+    total = len(list_of_fpn_files)
+    current = 0
 
     def _make_sure_folder_exists(lastfolder):
-        if action != "DELETE":
+        if action != ACTION_DELETE:
             folder = os.path.dirname(dst)
             if folder != lastfolder:
-                print(f"Created Folder {folder}")
                 os.makedirs(folder, exist_ok=True)
                 return folder
         return lastfolder
 
     def _execute(action, src, dst):
-        if is_dryrun:
-            return
-        
-        if action == "MOVE" or action == "RENAME":
+        if action == ACTION_MOVE or action == ACTION_RENAME:
             Path(src).rename(dst)
-        elif action == "COPY":
+        elif action == ACTION_COPY:
             copy2(src, dst)
             copystat(src, dst)
-        elif action == "DELETE":
+        elif action == ACTION_DELETE:
             os.remove(src)
 
     for row in list_of_fpn_files:
+        current += 1
+
         # decode vars
         if isinstance(row, str):
             src = row
@@ -143,42 +184,65 @@ def execute_actions(list_of_fpn_files: list[tuple], action: str = "", callback_o
             else:
                 raise ValueError(f"'list_of_fpn_files' parameter values not of valid type {type(row)}")
 
-        try:
-            lastfolder = _make_sure_folder_exists(lastfolder)
-            _execute(action, src, dst)
-        except Exception as e:
-            if callback_on_error:
-                callback_on_error(action, [src, dst, e])
+        if not is_dryrun:
+            try:
+                last_folder = _make_sure_folder_exists(last_folder)
+                _execute(action, src, dst)
+            except Exception as e:
+                if callback_on_error:
+                    callback_on_error(action, [src, dst, e])
+
+        if callback_on_progress:
+            callback_on_progress(action, [total, current, action, src, dst])
 
 
-def remove_folders(list_of_folders: list, callback_on_error: callable = None):
-    action = "RMDIR"
+def remove_folders(list_of_folders: list,
+                   callback_on_error: callable = None,
+                   callback_on_progress: callable = None):
+    action = "REMOVE_DIR"
+    total = len(list_of_folders)
+    current = 0
+
     for folder in list_of_folders:
+        current += 1
+
         try:
             os.rmdir(folder)
         except Exception as e:
             if callback_on_error:
                 callback_on_error(action, [folder, e])
 
+        if callback_on_progress:
+            callback_on_progress(action, [total, current, folder])
 
-IGNORE_ERRORS = False
-def callback_errors(sender, data):
-    if not IGNORE_ERRORS:
-        print(f"ERROR from {sender}")
-        print(data)
+
+def remove_empty_folders(path: str,
+                         callback_on_error: callable = None,
+                         callback_on_progress: callable = None):
+    empty_folders = list_empty_folders(path)
+    remove_folders(empty_folders, callback_on_error=callback_on_error, callback_on_progress=callback_on_progress)
 
 
 class FiReMan:
 
-    def __init__(self, callback_on_error: callable = None) -> None:
+    def __init__(self, callback_on_error: callable = None, callback_on_progress: callable = None) -> None:
         super().__init__()
         self.callback_on_error = callback_on_error
+        self.callback_on_progress = callback_on_progress
         self.df = pd.DataFrame([], columns=HEADER)
 
     def _append_df(self, fd: list):
         df = pd.DataFrame(fd, columns=HEADER[:-2])
         self.df = self.df.append(df, ignore_index=True)
-        self.df = self.df.drop_duplicates(subset=["fpn"], keep='first')
+        self.df = self.df.drop_duplicates(subset=[HEADER_SOURCE_FPN], keep='first')
+
+    def get_output_list_duo(self) -> list:
+        if HEADER_TARGET_FPN in self.df.columns:
+            return self.df[[HEADER_SOURCE_FPN, HEADER_TARGET_FPN]].values.tolist()
+        return []
+
+    def get_output_list_src(self) -> list:
+        return self.df[HEADER_SOURCE_FPN].values.tolist()
 
     def reset(self):
         self.df = pd.DataFrame([], columns=HEADER)
@@ -186,7 +250,7 @@ class FiReMan:
 
     def scan_folder(self, path: str, include_sub_folders: bool = False, filename_regex_filter: str = ""):
         files = list_files(path, include_full_path_name=True, include_folders=False, include_sub_folders=include_sub_folders, filename_regex_filter=filename_regex_filter)
-        fd = list_file_details(files, path)
+        fd = list_file_details(files, path, callback_on_error=self.callback_on_error, callback_on_progress=self.callback_on_progress)
         self._append_df(fd)
         return self
 
@@ -197,50 +261,42 @@ class FiReMan:
                         dst_regex: str = ""):
         # rename files
         if src_regex and dst_regex:
-            self.df["dst_fpn"] = self.df["filename"].replace(src_regex, dst_regex, regex=True)
+            self.df[HEADER_TARGET_FPN] = self.df[REGEX_RENAME_FIELD].replace(src_regex, dst_regex, regex=True)
         else:
-            self.df["dst_fpn"] = self.df["filename"]
+            self.df[HEADER_TARGET_FPN] = self.df[REGEX_RENAME_FIELD]
         
         # create destination full-path-name
         if keep_source_folder_structure:
-            self.df["dst_fpn"] = dst_folder + os.sep + self.df["rfolder"] + os.sep + self.df["dst_fpn"]
+            self.df[HEADER_TARGET_FPN] = dst_folder + os.sep + self.df[HEADER_RELATIVE_FOLDER] + os.sep + self.df[HEADER_TARGET_FPN]
         else:
-            self.df["dst_fpn"] = dst_folder + os.sep + self.df["dst_fpn"]
+            self.df[HEADER_TARGET_FPN] = dst_folder + os.sep + self.df[HEADER_TARGET_FPN]
         
         return self
 
-    def get_output_list(self) -> list:
-        if "dst_fpn" in self.df.columns:
-            return self.df[["fpn", "dst_fpn"]].values.tolist()
-        return []
-
-    def get_output_list_src(self) -> list:
-        return self.df["fpn"].values.tolist()
-
-    def execute(self, action: str):
+    def execute(self, action: str, is_dryrun: bool = True):
         if action not in ACTIONS:
             raise ValueError(f"Action must be one of {ACTIONS}")
-        self.df["action"] = action
+        self.df[HEADER_ACTION] = action
 
         # sort dataframe
-        if action == "DELETE":
-            self.df.sort_values(by=["fpn"], inplace=True)
+        if action == ACTION_DELETE:
+            self.df.sort_values(by=[HEADER_SOURCE_FPN], inplace=True)
             exec_list = self.get_output_list_src()
         else:
-            self.df.sort_values(by=["dst_fpn"], inplace=True)
-            exec_list = self.get_output_list()
+            self.df.sort_values(by=[HEADER_TARGET_FPN], inplace=True)
+            exec_list = self.get_output_list_duo()
 
-        execute_actions(exec_list, action=action, callback_on_error=self.callback_on_error)
+        execute_actions(exec_list, action=action, callback_on_error=self.callback_on_error, callback_on_progress=self.callback_on_progress, is_dryrun=is_dryrun)
 
         return self
 
-    def execute_from_csv(self, filename: str):
+    def execute_from_csv(self, filename: str, is_dryrun: bool = True):
         df = pd.read_csv(filename)
         if df.columns != CSV_HEADERS:
             raise ValueError(f"Expected header of {filename} to have {CSV_HEADERS}")
         
-        exec_list = df[CSV_HEADERS].sort_values(by=["dst_fpn"], inplace=False).fillna("", inplace=False).values.tolist()
-        execute_actions(exec_list, callback_on_error=self.callback_on_error)
+        exec_list = df[CSV_HEADERS].sort_values(by=[HEADER_TARGET_FPN], inplace=False).fillna("", inplace=False).values.tolist()
+        execute_actions(exec_list, callback_on_error=self.callback_on_error, callback_on_progress=self.callback_on_progress, is_dryrun=is_dryrun)
 
         return self
 
