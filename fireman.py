@@ -1,7 +1,6 @@
 import os
 import re
 import shutil
-from numpy.lib.function_base import select
 import pandas as pd
 from typing import Tuple, List
 from datetime import datetime
@@ -47,11 +46,9 @@ def list_files(path: str = "",
         try:
             for f in os.listdir(path):
                 fpn = os.path.join(path, f)
+                is_match = not filename_regex_filter or re.search(filename_regex_filter, f)
 
-                if filename_regex_filter and os.path.isfile(fpn) and not re.search(filename_regex_filter, f):
-                    continue
-
-                if (include_files and os.path.isfile(fpn)) or (include_folders and os.path.isdir(fpn)):
+                if (include_files and os.path.isfile(fpn) and is_match) or (include_folders and os.path.isdir(fpn) and is_match):
                     result.append(fpn if include_full_path_name else f)
 
                 if include_sub_folders and os.path.isdir(fpn):
@@ -120,7 +117,7 @@ def list_file_details(list_of_fpn_files: list,
 
 def list_empty_folders(path: str) -> list:
     # get all files under path and save only the foldername (the occupied ones, by files)
-    files = list_files(path, include_full_path_name=True, include_folders=False, include_sub_folders=True)
+    files = list_files(path, include_full_path_name=True, include_files=True, include_folders=False, include_sub_folders=True)
     files = list({os.path.dirname(file) for file in files})
 
     # list of all folders under same path
@@ -241,8 +238,12 @@ class FiReMan:
         self.df = pd.DataFrame([], columns=HEADER)
         return self
 
-    def scan_folder(self, path: str, include_sub_folders: bool = False, filename_regex_filter: str = ""):
-        files = list_files(path, include_full_path_name=True, include_folders=False, include_sub_folders=include_sub_folders, filename_regex_filter=filename_regex_filter)
+    def scan_folder(self, path: str, 
+                    include_files: bool = True,
+                    include_folders: bool = False,
+                    include_sub_folders: bool = True,
+                    filename_regex_filter: str = ""):
+        files = list_files(path, include_full_path_name=True, include_files=include_files, include_folders=include_folders, include_sub_folders=include_sub_folders, filename_regex_filter=filename_regex_filter)
         fd = list_file_details(files, path, callback_on_error=self.callback_on_error, callback_on_progress=self.callback_on_progress)
         self._append_df(fd)
         return self
@@ -260,13 +261,17 @@ class FiReMan:
                         dst_regex: str = ""):
         # rename files
         if src_regex and dst_regex:
-            self.df[HEADER_TARGET_FPN] = self.df[REGEX_RENAME_FIELD].replace(src_regex, dst_regex, regex=True)
+            self.df[HEADER_TARGET_FPN] = self.df[REGEX_RENAME_FIELD].str.replace(src_regex, dst_regex, regex=True)
         else:
             self.df[HEADER_TARGET_FPN] = self.df[REGEX_RENAME_FIELD]
         
+        # remove ending separator
+        dst_folder = dst_folder.rstrip(os.sep)
+
         # create destination full-path-name
         if keep_source_folder_structure:
             self.df[HEADER_TARGET_FPN] = dst_folder + os.sep + self.df[HEADER_RELATIVE_FOLDER] + os.sep + self.df[HEADER_TARGET_FPN]
+            self.df[HEADER_TARGET_FPN] = self.df[HEADER_TARGET_FPN].str.replace(os.sep*2, os.sep, case=True, regex=False)
         else:
             self.df[HEADER_TARGET_FPN] = dst_folder + os.sep + self.df[HEADER_TARGET_FPN]
         
