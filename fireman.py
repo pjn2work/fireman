@@ -1,5 +1,7 @@
 import os
 import re
+import shutil
+from numpy.lib.function_base import select
 import pandas as pd
 from typing import Tuple, List
 from datetime import datetime
@@ -13,8 +15,9 @@ install()
 HEADER_SOURCE_FPN = "fpn"
 HEADER_TARGET_FPN = "dst_fpn"
 HEADER_RELATIVE_FOLDER = "rfolder"
+HEADER_IS_FILE = "is_file"
 HEADER_ACTION = "action"
-HEADER = [HEADER_SOURCE_FPN, "folder", "rpath", HEADER_RELATIVE_FOLDER, "filename", "name", "ext", "size", "mtime", "ctime", HEADER_TARGET_FPN, HEADER_ACTION]
+HEADER = [HEADER_SOURCE_FPN, "folder", "rpath", HEADER_RELATIVE_FOLDER, "filename", "name", "ext", "size", "mtime", "ctime", HEADER_IS_FILE, HEADER_TARGET_FPN, HEADER_ACTION]
 CSV_HEADERS = [HEADER_SOURCE_FPN, HEADER_TARGET_FPN, HEADER_ACTION]
 
 REGEX_RENAME_FIELD = "filename"
@@ -23,7 +26,9 @@ ACTION_MOVE = "MOVE"
 ACTION_RENAME = "RENAME"
 ACTION_COPY = "COPY"
 ACTION_DELETE = "DELETE"
-ACTIONS = (ACTION_MOVE, ACTION_RENAME, ACTION_COPY, ACTION_DELETE)
+ACTION_REMOVE_FOLDER = "RMDIR"
+ACTION_MOVE_FOLDER = "MOVEDIR"
+ACTIONS = (ACTION_MOVE, ACTION_RENAME, ACTION_COPY, ACTION_DELETE, ACTION_REMOVE_FOLDER, ACTION_MOVE_FOLDER)
 
 
 def list_files(path: str = "", 
@@ -94,12 +99,13 @@ def list_file_details(list_of_fpn_files: list,
             rpath = fpn[relative_path:].lstrip(os.sep)
             rfolder = folder[relative_path:].lstrip(os.sep)
             name, extension = os.path.splitext(filename)
+            is_file = os.path.isfile(fpn)
             stat = os.stat(fpn)
             filesize = stat.st_size
             md_time = datetime.fromtimestamp(stat.st_mtime)
             cr_time = datetime.fromtimestamp(stat.st_ctime)
 
-            attr = (fpn, folder, rpath, rfolder, filename, name, extension[1:], filesize, md_time, cr_time)
+            attr = (fpn, folder, rpath, rfolder, filename, name, extension[1:], filesize, md_time, cr_time, is_file)
             res2.append(attr)
         except Exception as e:
             filesize = -1
@@ -141,11 +147,14 @@ def execute_actions(list_of_fpn_files: List[tuple],
                     callback_on_progress: callable = None,
                     is_dryrun: bool = True):
     """
-    action = ("MOVE", "RENAME", "COPY", "DELETE")
+    action = ("MOVE", "RENAME", "COPY", "DELETE", "RMDIR", "MOVEDIR")
     list_of_fpn_files = [(src, dst, action) or (src, dst) or "src", ...]
     callback_on_error = func(sender, data)
     callback_on_progress = func(sender, data)
     """
+    if not list_of_fpn_files:
+        return
+    
     if not isinstance(list_of_fpn_files, list) or not isinstance(list_of_fpn_files[0], (list, tuple, str)):
         raise ValueError(f"'list_of_fpn_files' parameter must be of [(src, dst, action) or (src, dst) or 'src', ...]")
 
@@ -169,6 +178,10 @@ def execute_actions(list_of_fpn_files: List[tuple],
             copystat(src, dst)
         elif action == ACTION_DELETE:
             os.remove(src)
+        elif action == ACTION_REMOVE_FOLDER:
+            os.rmdir(src)
+        elif action == ACTION_MOVE_FOLDER:
+            shutil.move(src, dst)
 
     for row in list_of_fpn_files:
         current += 1
@@ -196,31 +209,11 @@ def execute_actions(list_of_fpn_files: List[tuple],
             callback_on_progress(action, [total, current, action, src, dst])
 
 
-def remove_folders(list_of_folders: list,
-                   callback_on_error: callable = None,
-                   callback_on_progress: callable = None):
-    action = "REMOVE_DIR"
-    total = len(list_of_folders)
-    current = 0
-
-    for folder in list_of_folders:
-        current += 1
-
-        try:
-            os.rmdir(folder)
-        except Exception as e:
-            if callback_on_error:
-                callback_on_error(action, [folder, e])
-
-        if callback_on_progress:
-            callback_on_progress(action, [total, current, folder])
-
-
 def remove_empty_folders(path: str,
                          callback_on_error: callable = None,
                          callback_on_progress: callable = None):
     empty_folders = list_empty_folders(path)
-    remove_folders(empty_folders, callback_on_error=callback_on_error, callback_on_progress=callback_on_progress)
+    execute_actions(empty_folders, action=ACTION_REMOVE_FOLDER, callback_on_error=callback_on_error, callback_on_progress=callback_on_progress)
 
 
 class FiReMan:
@@ -254,6 +247,12 @@ class FiReMan:
         self._append_df(fd)
         return self
 
+    def scan_empty_folders(self, path: str):
+        empty_folders = list_empty_folders(path)
+        fd = list_file_details(empty_folders, path, callback_on_error=self.callback_on_error, callback_on_progress=self.callback_on_progress)
+        self._append_df(fd)
+        return self
+
     def generate_output(self,
                         dst_folder: str,
                         keep_source_folder_structure: bool,
@@ -279,8 +278,7 @@ class FiReMan:
         self.df[HEADER_ACTION] = action
 
         # sort dataframe
-        if action == ACTION_DELETE:
-            self.df.sort_values(by=[HEADER_SOURCE_FPN], inplace=True)
+        if action in (ACTION_DELETE, ACTION_REMOVE_FOLDER):
             exec_list = self.get_output_list_src()
         else:
             self.df.sort_values(by=[HEADER_TARGET_FPN], inplace=True)
@@ -295,7 +293,7 @@ class FiReMan:
         if df.columns != CSV_HEADERS:
             raise ValueError(f"Expected header of {filename} to have {CSV_HEADERS}")
         
-        exec_list = df[CSV_HEADERS].sort_values(by=[HEADER_TARGET_FPN], inplace=False).fillna("", inplace=False).values.tolist()
+        exec_list = df[CSV_HEADERS].fillna("", inplace=False).values.tolist()
         execute_actions(exec_list, callback_on_error=self.callback_on_error, callback_on_progress=self.callback_on_progress, is_dryrun=is_dryrun)
 
         return self
