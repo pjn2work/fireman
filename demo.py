@@ -17,13 +17,27 @@ def callback_progress(sender, data):
     FRM.print(f"PROGRESS from {sender} - {data}")
 
 
-path_src = "/home/pedro/demo"
+path_src = r"C:\backup\gdrive\LDSSA" #"/home/pedro/demo"
 path_dst = "/home/pedro/apagar"
 
 
 def test1():
-    for x in FRM.list_empty_folders(path_src):
+    ef = FRM.list_empty_folders(path_src)
+    efd = FRM.list_file_details(ef)
+    for x in efd:
         FRM.print(x)
+
+
+def test5(path = r"c:\backup\git\fireman"):    
+    ef = FRM.list_files(path, include_sub_folders=True)
+    efd = FRM.list_file_details(ef)
+    for x in efd:
+        FRM.print(x)
+
+
+def test6(frm, path = r"c:\backup\git\fireman"):
+    #frm.scan_folder(path, include_sub_folders=True).scan_empty_folders(path).save_to_csv()
+    frm.reset().scan_empty_folders(path + r"\apagar.txt").execute(FRM.ACTION_REMOVE_FOLDER)
 
 
 def test2():
@@ -41,7 +55,13 @@ def test3(frm):
     frm.execute("COPY", is_dryrun=True)
 
 
+def test4(frm: FRM.FiReMan):
+    """Create folders based on file extension and generate CSV file"""
+    frm.scan_empty_folders(path_src)
+    frm.save_to_csv("demo.csv")
+
+
 if __name__ == "__main__":
     frm = FRM.FiReMan(callback_on_error=callback_errors, callback_on_progress=callback_progress)
-    test1()
-    test3(frm)
+    test6(frm)
+    #test4(frm)
