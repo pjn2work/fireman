@@ -4,8 +4,6 @@ import shutil
 import pandas as pd
 from typing import Tuple, List
 from datetime import datetime
-from pathlib import Path
-from shutil import copystat, copy2
 from rich import print
 from rich.traceback import install
 install()
@@ -19,7 +17,7 @@ HEADER_ACTION = "action"
 HEADER = [HEADER_SOURCE_FPN, "folder", "rpath", HEADER_RELATIVE_FOLDER, "filename", "name", "ext", "size", "mtime", "ctime", HEADER_IS_FILE, HEADER_TARGET_FPN, HEADER_ACTION]
 CSV_HEADERS = [HEADER_SOURCE_FPN, HEADER_TARGET_FPN, HEADER_ACTION]
 
-REGEX_RENAME_FIELD = "filename"
+REGEX_RENAME_BASED_ON_FIELD = "filename"
 
 ACTION_MOVE = "MOVE"
 ACTION_RENAME = "RENAME"
@@ -83,7 +81,7 @@ def list_file_details(list_of_fpn_files: list,
     else:
         relative_path = 0
 
-    action = "LIST_FILE_DETAILS"
+    sender = "LIST_FILE_DETAILS"
     total = len(list_of_fpn_files)
     current = 0
 
@@ -107,10 +105,10 @@ def list_file_details(list_of_fpn_files: list,
         except Exception as e:
             filesize = -1
             if callback_on_error:
-                callback_on_error(action, [fpn, e])
+                callback_on_error(sender, [fpn, e])
 
         if callback_on_progress:
-            callback_on_progress(action, [total, current, fpn, filesize])
+            callback_on_progress(sender, [total, current, fpn, filesize])
 
     return res2
 
@@ -155,6 +153,7 @@ def execute_actions(list_of_fpn_files: List[tuple],
     if not isinstance(list_of_fpn_files, list) or not isinstance(list_of_fpn_files[0], (list, tuple, str)):
         raise ValueError(f"'list_of_fpn_files' parameter must be of [(src, dst, action) or (src, dst) or 'src', ...]")
 
+    sender = "EXECUTE_ACTIONS"
     last_folder = src = dst = ""
     total = len(list_of_fpn_files)
     current = 0
@@ -168,16 +167,14 @@ def execute_actions(list_of_fpn_files: List[tuple],
         return lastfolder
 
     def _execute(action, src, dst):
-        if action == ACTION_MOVE or action == ACTION_RENAME:
-            Path(src).rename(dst)
-        elif action == ACTION_COPY:
-            copy2(src, dst)
-            copystat(src, dst)
+        if action == ACTION_COPY:
+            shutil.copy2(src, dst)
+            shutil.copystat(src, dst)
         elif action == ACTION_DELETE:
             os.remove(src)
         elif action == ACTION_REMOVE_FOLDER:
             os.rmdir(src)
-        elif action == ACTION_MOVE_FOLDER:
+        elif action in [ACTION_MOVE, ACTION_RENAME, ACTION_MOVE_FOLDER]:
             shutil.move(src, dst)
 
     for row in list_of_fpn_files:
@@ -200,10 +197,10 @@ def execute_actions(list_of_fpn_files: List[tuple],
                 _execute(action, src, dst)
             except Exception as e:
                 if callback_on_error:
-                    callback_on_error(action, [src, dst, e])
+                    callback_on_error(sender, [action, src, dst, e])
 
         if callback_on_progress:
-            callback_on_progress(action, [total, current, action, src, dst])
+            callback_on_progress(sender, [total, current, action, src, dst])
 
 
 def remove_empty_folders(path: str,
@@ -226,13 +223,21 @@ class FiReMan:
         self.df = self.df.append(df, ignore_index=True)
         self.df = self.df.drop_duplicates(subset=[HEADER_SOURCE_FPN], keep='first')
 
-    def get_output_list_duo(self) -> list:
-        if HEADER_TARGET_FPN in self.df.columns:
-            return self.df[[HEADER_SOURCE_FPN, HEADER_TARGET_FPN]].values.tolist()
-        return []
+    def _get_df_list_based_on_action(self, action: str = "") -> list:
+        if action == "":
+            df = self.df
+        elif action in [ACTION_MOVE_FOLDER, ACTION_REMOVE_FOLDER]:
+            df = self.df[self.df[HEADER_IS_FILE] == False]
+        else:
+            df = self.df[self.df[HEADER_IS_FILE] == True]
+            df.sort_values(by=[HEADER_TARGET_FPN], inplace=True)
 
-    def get_output_list_src(self) -> list:
-        return self.df[HEADER_SOURCE_FPN].values.tolist()
+        if action in (ACTION_DELETE, ACTION_REMOVE_FOLDER):
+            df = df[HEADER_SOURCE_FPN]
+        else:
+            df = df[[HEADER_SOURCE_FPN, HEADER_TARGET_FPN]]
+
+        return df.values.tolist()
 
     def reset(self):
         self.df = pd.DataFrame([], columns=HEADER)
@@ -261,9 +266,9 @@ class FiReMan:
                         dst_regex: str = ""):
         # rename files
         if src_regex and dst_regex:
-            self.df[HEADER_TARGET_FPN] = self.df[REGEX_RENAME_FIELD].str.replace(src_regex, dst_regex, regex=True)
+            self.df[HEADER_TARGET_FPN] = self.df[REGEX_RENAME_BASED_ON_FIELD].str.replace(src_regex, dst_regex, regex=True)
         else:
-            self.df[HEADER_TARGET_FPN] = self.df[REGEX_RENAME_FIELD]
+            self.df[HEADER_TARGET_FPN] = self.df[REGEX_RENAME_BASED_ON_FIELD]
         
         # remove ending separator
         dst_folder = dst_folder.rstrip(os.sep)
@@ -280,23 +285,15 @@ class FiReMan:
     def execute(self, action: str, is_dryrun: bool = True):
         if action not in ACTIONS:
             raise ValueError(f"Action must be one of {ACTIONS}")
-        self.df[HEADER_ACTION] = action
 
-        # sort dataframe
-        if action in (ACTION_DELETE, ACTION_REMOVE_FOLDER):
-            exec_list = self.get_output_list_src()
-        else:
-            self.df.sort_values(by=[HEADER_TARGET_FPN], inplace=True)
-            exec_list = self.get_output_list_duo()
-
-        execute_actions(exec_list, action=action, callback_on_error=self.callback_on_error, callback_on_progress=self.callback_on_progress, is_dryrun=is_dryrun)
-
+        execute_actions(self._get_df_list_based_on_action(action), action=action, callback_on_error=self.callback_on_error, callback_on_progress=self.callback_on_progress, is_dryrun=is_dryrun)
         return self
 
     def execute_from_csv(self, filename: str, is_dryrun: bool = True):
         df = pd.read_csv(filename)
-        if df.columns != CSV_HEADERS:
-            raise ValueError(f"Expected header of {filename} to have {CSV_HEADERS}")
+        for col_name in CSV_HEADERS:
+            if col_name not in df.columns:
+                raise ValueError(f"Expected header of {filename} to have {CSV_HEADERS}. Missing {col_name}")
         
         exec_list = df[CSV_HEADERS].fillna("", inplace=False).values.tolist()
         execute_actions(exec_list, callback_on_error=self.callback_on_error, callback_on_progress=self.callback_on_progress, is_dryrun=is_dryrun)
