@@ -4,9 +4,6 @@ import shutil
 import pandas as pd
 from typing import Tuple, List
 from datetime import datetime
-from rich import print
-from rich.traceback import install
-install()
 
 
 HEADER_SOURCE_FPN = "fpn"
@@ -221,7 +218,7 @@ class FiReMan:
     def _append_df(self, fd: list):
         df = pd.DataFrame(fd, columns=HEADER[:-2])
         self.df = self.df.append(df, ignore_index=True)
-        self.df = self.df.drop_duplicates(subset=[HEADER_SOURCE_FPN], keep='first')
+        self.df = self.df.drop_duplicates(subset=[HEADER_SOURCE_FPN], keep='first').fillna("", inplace=False)
 
     def _get_df_list_based_on_action(self, action: str = "") -> list:
         if action == "":
