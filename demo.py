@@ -64,7 +64,7 @@ def remove_empty_folder6(frm):
 
 if __name__ == "__main__":
     frm = FRM.FiReMan(callback_on_error=callback_errors, callback_on_progress=callback_progress)
-    copy_files1(frm)
+    copy_files1(frm)    
     #move_files2(frm)
     #remove_empty_folder3(frm)
     #move_folder4(frm)
